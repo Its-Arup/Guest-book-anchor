@@ -19,6 +19,15 @@ pub mod guestbook {
         require!(message.as_bytes().len() <= 64, GuestbookError::MessageTooLong);
         let guestbook = &mut ctx.accounts.guestbook;
 
+
+        // realloc magic: calculate new size
+        // hard cap: don't let it grow beyond max
+        let new_size = Guestbook::BASE_SIZE
+            + (guestbook.entries.len() + 1) * (32 + 4 + 64 + 8);
+        require!(new_size <= Guestbook::MAX_TOTAL_SIZE, GuestbookError::GuestbookTooBig);
+        // This above code is for dynamic size guestbook
+
+
         let entry = Entry {
             user: *ctx.accounts.signer.key,
             message,
@@ -36,7 +45,11 @@ pub struct Initialize<'info> {
     signer: Signer<'info>,
     #[account(init, 
         payer = signer, 
-        space = 8 + Guestbook::MAX_SIZE, 
+        // optional: This is for Fixed Size Guestbook
+        // space = 8 + Guestbook::MAX_SIZE, 
+
+        // --- realloc magic ---
+        space = Guestbook::BASE_SIZE, 
         seeds = [b"guestbook", signer.key().as_ref()],
         bump
     )]
@@ -45,20 +58,37 @@ pub struct Initialize<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(message: String)]
 pub struct AddEntry<'info> {
     #[account(mut)]
     signer: Signer<'info>,
     #[account(
         mut, 
         seeds = [b"guestbook", signer.key().as_ref()],
-        bump
+        bump,
+
+        // optional: This is for Dynamic Size Guestbook
+          // --- realloc magic ---
+        realloc = Guestbook::BASE_SIZE + ((guestbook.entries.len() + 1) * (32 + 4 + 64 + 8)),
+        realloc::payer = signer,
+        realloc::zero = false    
     )]
     guestbook: Account<'info, Guestbook>,
     system_program: Program<'info, System>,
 }
 
+
+// // Note: This is for fixed size guestbook with max 90 entries
+// impl Guestbook {
+//     pub const MAX_SIZE: usize = 8 + 32 + (4 + 90 * (32 + 4 + 64 + 8)); // Adjusted for max 90 entries (fits within 10KB limit)
+// }
+
+
+// Note: This is for dynamic size guestbook
+
 impl Guestbook {
-    pub const MAX_SIZE: usize = 8 + 32 + (4 + 90 * (32 + 4 + 64 + 8)); // Adjusted for max 90 entries (fits within 10KB limit)
+    pub const BASE_SIZE: usize = 8 + 32 + 4; // disc + signer + vec len
+    pub const MAX_TOTAL_SIZE: usize = 10 * 1024; // cap (10 KB) for playground safety
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -78,4 +108,6 @@ pub struct Guestbook {
 pub enum GuestbookError {
     #[msg("The message is too long.")]
     MessageTooLong,
+    #[msg("The guestbook has reached its maximum size.")]
+    GuestbookTooBig,
 }
